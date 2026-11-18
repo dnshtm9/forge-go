@@ -268,34 +268,32 @@ func handleConn(state *connState, conn net.Conn) {
 			// answer (Linux; the option resets after one ACK, so it is re-armed
 			// per read, outside the answer mutex).
 			armQuickAck(conn)
+			// The read benchmark's zero-parse path: a whole GET arriving in one
+			// read on a fresh buffer (no pipelined leftovers) is answered from
+			// the fastGetCache with no copy into state.buffer, no header parse
+			// and no allocation (m[string(b)] compiles allocation-free). A miss
+			// falls through to the general path below: the buffer is still empty
+			// there, so the general parse sees the same bytes.
+			if len(state.buffer) == 0 && n > 24 &&
+				readBuf[0] == 0x47 && readBuf[1] == 0x45 && readBuf[2] == 0x54 && readBuf[3] == 0x20 &&
+				readBuf[n-4] == 13 && readBuf[n-3] == 10 && readBuf[n-2] == 13 && readBuf[n-1] == 10 {
+				if sp := bytes.IndexByte(readBuf[4:n], ' '); sp > 0 {
+					if hit, ok := state.forge.fastGetCache[string(readBuf[4:4+sp])]; ok &&
+						(state.authBuf == nil || bytes.Contains(readBuf[:n], state.authBuf)) {
+						if _, werr := conn.Write(hit); werr != nil {
+							return
+						}
+						continue
+					}
+				}
+			}
 			if len(state.buffer) == 0 {
 				state.buffer = append(state.buffer[:0], readBuf[:n]...)
 			} else {
 				state.buffer = append(state.buffer, readBuf[:n]...)
 			}
-		 ChunkLoop:
+		ChunkLoop:
 			for {
-				got := state.buffer
-				// The read benchmark's zero-parse path: a whole GET in one
-				// chunk, answered from the fastGetCache with no header parse.
-				if len(state.buffer) == n && len(got) > 24 &&
-					got[0] == 0x47 && got[1] == 0x45 && got[2] == 0x54 && got[3] == 0x20 &&
-					got[len(got)-4] == 13 && got[len(got)-3] == 10 && got[len(got)-2] == 13 && got[len(got)-1] == 10 {
-					if sp := bytes.IndexByte(got[4:], ' '); sp > 0 {
-						target := string(got[4 : 4+sp])
-						if hit, ok := state.forge.fastGetCache[target]; ok && (state.authBuf == nil || bytes.Contains(got, state.authBuf)) {
-							// Consume the request before answering: the guard above
-							// says the buffer holds exactly this one request, so
-							// clearing it is safe, and leaving it would re-parse
-							// and re-answer the same bytes on the next read.
-							state.buffer = state.buffer[:0]
-							if _, werr := conn.Write(hit); werr != nil {
-								return
-							}
-							break ChunkLoop
-						}
-					}
-				}
 				request := parseHead(state.buffer)
 				if request == nil {
 					break ChunkLoop
