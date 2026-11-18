@@ -280,6 +280,11 @@ func handleConn(state *connState, conn net.Conn) {
 					if sp := bytes.IndexByte(got[4:], ' '); sp > 0 {
 						target := string(got[4 : 4+sp])
 						if hit, ok := state.forge.fastGetCache[target]; ok && (state.authBuf == nil || bytes.Contains(got, state.authBuf)) {
+							// Consume the request before answering: the guard above
+							// says the buffer holds exactly this one request, so
+							// clearing it is safe, and leaving it would re-parse
+							// and re-answer the same bytes on the next read.
+							state.buffer = state.buffer[:0]
 							if _, werr := conn.Write(hit); werr != nil {
 								return
 							}

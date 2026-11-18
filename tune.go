@@ -1,4 +1,4 @@
-// debug.SetGCPercent(-1) at startup: the heap is a few MB and bounded.
+// debug.SetGCPercent(400) at startup: the heap is a few MB and bounded.
 package main
 
 import (
@@ -13,5 +13,5 @@ func debugStack() []byte {
 }
 
 func debugSetGCPercent() {
-	debug.SetGCPercent(-1)
+	debug.SetGCPercent(400)
 }
