@@ -285,6 +285,7 @@ func waitForDone(envURL string) {
 }
 
 func main() {
+	sizeToQuota()
 	debugSetGCPercent()
 	startPprofIfEnabled()
 	defer stopCPUProfile()
