@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type user struct {
@@ -187,6 +188,12 @@ type forge struct {
 	nextRepoID     int
 	nextLabelID    int
 	requestCounter int
+	// mu serializes the whole answer path: the TypeScript served every request
+	// on one thread, and the shared caches (fastGetCache, the per-repo git
+	// response caches) are written while another connection goroutine may read
+	// them — a concurrent map write there is fatal. One mutex is cheaper than
+	// a lock per cache and the handlers are microseconds.
+	mu sync.Mutex
 }
 
 func newForge(clock *fixedClock, viewerLogin string) *forge {

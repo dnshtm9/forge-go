@@ -286,6 +286,8 @@ func waitForDone(envURL string) {
 
 func main() {
 	debugSetGCPercent()
+	startPprofIfEnabled()
+	defer stopCPUProfile()
 
 	envURL := envURLTrimmed(os.Getenv("MAKEFUN_ENV_URL"))
 	if envURL == "" {

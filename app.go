@@ -389,8 +389,12 @@ type panicError struct{ what any }
 func (e *panicError) Error() string { return "handler panic" }
 
 // answer routes one parsed request; nil means nothing is written (a 202).
+// The forge's answer path is serialized (one mutex): the shared caches are
+// written while another connection goroutine may read them.
 func answer(state *connState, request *parsedRequest, body []byte) ([]byte, error) {
 	f := state.forge
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	target := request.target
 	queryIndex := strings.IndexByte(target, '?')
 	pathname := target
