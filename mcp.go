@@ -53,9 +53,10 @@ var mcpToolSpecs = []mcpToolSpec{
 		[][2]string{{"owner", "string"}, {"repo", "string"}, {"issue_number", "number"}}, []string{"owner", "repo", "issue_number"}},
 }
 
-// mcpToolListJSON answers the tool list's bytes. Built once at start.
+// mcpToolListBytes is the tools/list answer's tools array, built once at init.
 var mcpToolListBytes = buildMCPToolList()
 
+// buildMCPToolList answers the tool list's bytes.
 func buildMCPToolList() []byte {
 	j := newJSON()
 	j.raw("[")
@@ -63,6 +64,7 @@ func buildMCPToolList() []byte {
 		if i > 0 {
 			j.raw(",")
 		}
+		j.begin()
 		j.raw("{")
 		j.key("name")
 		j.string(spec.name)
@@ -71,20 +73,20 @@ func buildMCPToolList() []byte {
 		j.key("description")
 		j.string(spec.description)
 		j.key("inputSchema")
+		j.begin()
 		j.raw("{")
 		j.key("type")
 		j.string("object")
 		j.key("properties")
+		j.begin()
 		j.raw("{")
-		for k, prop := range spec.properties {
-			if k > 0 {
-				j.raw(",")
-			}
+		for _, prop := range spec.properties {
 			j.key(prop[0])
 			j.raw(`{"type":`)
 			j.string(prop[1])
 			j.raw("}")
 		}
+		j.end()
 		j.raw("}")
 		j.key("required")
 		j.raw("[")
@@ -95,7 +97,9 @@ func buildMCPToolList() []byte {
 			j.string(req)
 		}
 		j.raw("]")
+		j.end()
 		j.raw("}")
+		j.end()
 		j.raw("}")
 	}
 	j.raw("]")
@@ -186,7 +190,7 @@ func handleMcp(f *forge, body jsonValue, hasToken bool, rawBody string, methodHe
 		return &mcpAnswer{status: 200, body: rpcResult(id, result)}
 
 	case "tools/list":
-		return &mcpAnswer{status: 200, body: rpcResult(id, []byte(`{"tools":`+string(mcpToolListBytes)+`}`))}
+		return &mcpAnswer{status: 200, body: rpcResult(id, []byte(`{"tools":`+string(buildMCPToolList())+`}`))}
 
 	case "tools/call":
 		return mcpToolsCall(f, id, params)
@@ -476,6 +480,7 @@ func jsonStr(v jsonValue) string { return v.strV() }
 func mcpRepoJSON(r *repo) []byte {
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("id")
 	j.int(r.id)
 	j.key("name")
@@ -491,7 +496,9 @@ func mcpRepoJSON(r *repo) []byte {
 	j.key("owner")
 	j.raw(`{"login":`)
 	j.string(r.owner)
+	j.end()
 	j.raw("}")
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -509,6 +516,7 @@ func mcpRepoStructured(r *repo) *jsonValue {
 func mcpIssueJSON(is *issue) []byte {
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("id")
 	j.int(is.id)
 	j.key("number")
@@ -519,6 +527,7 @@ func mcpIssueJSON(is *issue) []byte {
 	j.string(is.body)
 	j.key("state")
 	j.string(is.state)
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -536,6 +545,7 @@ func mcpIssueStructured(is *issue) *jsonValue {
 func mcpPullJSON(p *pull) []byte {
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("id")
 	j.int(p.id)
 	j.key("number")
@@ -553,11 +563,14 @@ func mcpPullJSON(p *pull) []byte {
 	j.key("head")
 	j.raw(`{"ref":`)
 	j.string(p.head)
+	j.end()
 	j.raw("}")
 	j.key("base")
 	j.raw(`{"ref":`)
 	j.string(p.base)
+	j.end()
 	j.raw("}")
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -576,6 +589,7 @@ func mcpPullStructured(p *pull) *jsonValue {
 func mcpPullMergedJSON(p *pull) []byte {
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("id")
 	j.int(p.id)
 	j.key("number")
@@ -593,13 +607,16 @@ func mcpPullMergedJSON(p *pull) []byte {
 	j.key("head")
 	j.raw(`{"ref":`)
 	j.string(p.head)
+	j.end()
 	j.raw("}")
 	j.key("base")
 	j.raw(`{"ref":`)
 	j.string(p.base)
+	j.end()
 	j.raw("}")
 	j.key("sha")
 	j.strPtr(p.mergeCommitSha)
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }

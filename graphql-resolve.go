@@ -307,7 +307,6 @@ func gqlResolveField(ctx *gqlContext, typeName string, source any, field gqlSele
 					names = append(names, name)
 				}
 			}
-			obj := &gqlNode{}
 			arr := make([]byte, 0, 64)
 			arr = append(arr, '[')
 			count := 0
@@ -323,8 +322,7 @@ func gqlResolveField(ctx *gqlContext, typeName string, source any, field gqlSele
 				arr = append(arr, inner.bytes()...)
 			}
 			arr = append(arr, ']')
-			obj.emit(keyAlias(field), arr)
-			return obj
+			return arr
 		case "enumValues":
 			if t.enumValues == nil {
 				return []byte("null")
@@ -333,7 +331,6 @@ func gqlResolveField(ctx *gqlContext, typeName string, source any, field gqlSele
 			if v, ok := gqlArgOf(field, "includeDeprecated", variables); ok && v.kind == jsonBool {
 				includeDeprecated = v.boolean
 			}
-			obj := &gqlNode{}
 			arr := make([]byte, 0, 64)
 			arr = append(arr, '[')
 			count := 0
@@ -349,8 +346,7 @@ func gqlResolveField(ctx *gqlContext, typeName string, source any, field gqlSele
 				arr = append(arr, inner.bytes()...)
 			}
 			arr = append(arr, ']')
-			obj.emit(keyAlias(field), arr)
-			return obj
+			return arr
 		}
 		return gqlMissing
 
