@@ -46,7 +46,7 @@ function launch(path: string): void {
   child.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EACCES' && !retried) {
       retried = true;
-      const mode = spawnSync('chmod', ['0o755', path], { stdio: 'ignore' });
+      const mode = spawnSync('chmod', ['755', path], { stdio: 'ignore' });
       if (mode.error === undefined && mode.status === 0) {
         launch(path);
         return;
