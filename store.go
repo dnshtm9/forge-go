@@ -188,12 +188,11 @@ type forge struct {
 	nextRepoID     int
 	nextLabelID    int
 	requestCounter int
-	// mu serializes the whole answer path: the TypeScript served every request
-	// on one thread, and the shared caches (fastGetCache, the per-repo git
-	// response caches) are written while another connection goroutine may read
-	// them — a concurrent map write there is fatal. One mutex is cheaper than
-	// a lock per cache and the handlers are microseconds.
-	mu sync.Mutex
+	// mu is the answer path's lock: reads (the git caches' hit paths, GETs) hold
+	// it shared; mutations and cache fills hold it exclusive. A clone wave's
+	// 50 concurrent requests all read — the wave runs in parallel — while a
+	// write (a push, an issue create) still excludes every reader.
+	mu sync.RWMutex
 }
 
 func newForge(clock *fixedClock, viewerLogin string) *forge {

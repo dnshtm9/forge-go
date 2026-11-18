@@ -398,10 +398,63 @@ func (e *panicError) Error() string { return "handler panic" }
 // answer routes one parsed request; nil means nothing is written (a 202).
 // The forge's answer path is serialized (one mutex): the shared caches are
 // written while another connection goroutine may read them.
+// errNeedUpgrade is the read path's answer when a cache miss wants to fill:
+// the caller re-runs the request under the exclusive lock (fills are cheap
+// and one writer's cache entry serves every waiter behind it).
+var errNeedUpgrade = errors.New("cache miss: fill under the exclusive lock")
+
 func answer(state *connState, request *parsedRequest, body []byte) ([]byte, error) {
 	f := state.forge
+	// The lock mode rides on the route: everything a clone wave does (the git
+	// surface, the issue GETs) is a read and runs shared; a mutation (REST
+	// writes, receive-pack, GraphQL, MCP) takes the lock exclusive.
+	if !answerIsReadOnly(request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return answerLocked(state, request, body, false)
+	}
+	f.mu.RLock()
+	reply, err := answerLocked(state, request, body, true)
+	f.mu.RUnlock()
+	if err != errNeedUpgrade {
+		return reply, err
+	}
+	// A miss that wants to fill: re-run under the write lock. Fills are cheap;
+	// the cache entry they build serves the wave behind it.
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return answerLocked(state, request, body, false)
+}
+
+// answerIsReadOnly answers whether this request only reads the store: the git
+// surface except receive-pack, REST GETs, and healthz.
+func answerIsReadOnly(request *parsedRequest) bool {
+	method := request.method
+	pathname := request.target
+	if i := strings.IndexByte(pathname, '?'); i >= 0 {
+		pathname = pathname[:i]
+	}
+	if method == "GET" && pathname == "/healthz" {
+		return true
+	}
+	if method == "GET" && (strings.HasSuffix(pathname, ".git") || strings.Contains(pathname, ".git/")) {
+		// receive-pack's advertisement is a read; the POST mutates.
+		return true
+	}
+	if method == "POST" && strings.HasSuffix(pathname, ".git/git-upload-pack") {
+		return true
+	}
+	if method == "GET" && (pathname == "/api/v3" || strings.HasPrefix(pathname, "/api/v3/")) {
+		return true
+	}
+	return false
+}
+
+// answerLocked routes one request with the forge's lock already held in the
+// mode answer chose. When that mode is shared (readOnly), cache fills are not
+// allowed: the GET paths only answer from the caches or escalate.
+func answerLocked(state *connState, request *parsedRequest, body []byte, readOnly bool) ([]byte, error) {
+	f := state.forge
 	target := request.target
 	queryIndex := strings.IndexByte(target, '?')
 	pathname := target
@@ -423,7 +476,7 @@ func answer(state *connState, request *parsedRequest, body []byte) ([]byte, erro
 		if !ok {
 			return json404, nil
 		}
-		return answerGit(f, request, body, owner, repoName, rest, queryText, method), nil
+		return answerGit(f, request, body, owner, repoName, rest, queryText, method)
 	}
 
 	// REST v3.
@@ -436,7 +489,8 @@ func answer(state *connState, request *parsedRequest, body []byte) ([]byte, erro
 				return hit, nil
 			}
 		}
-		return answerRest(f, method, pathname[len("/api/v3"):], queryText, body, request.headers), nil
+		reply, rerr := answerRest(f, method, pathname[len("/api/v3"):], queryText, body, request.headers, readOnly)
+		return reply, rerr
 	}
 
 	// GraphQL v4.
@@ -482,7 +536,15 @@ const issueGetPrefix = "/repos/"
 
 // answerRest answers a REST request; the issue GET/POST hot paths bypass
 // the generic router.
-func answerRest(f *forge, method, restPath, queryText string, body []byte, headers map[string]string) []byte {
+func answerRest(f *forge, method, restPath, queryText string, body []byte, headers map[string]string, readOnly bool) ([]byte, error) {
+	if readOnly && method == "GET" {
+		// The shared path answers only from the zero-parse cache; a miss lets
+		// the caller escalate (a fill is exclusive work).
+		if hit, ok := f.fastGetCache[restPath]; ok {
+			return hit, nil
+		}
+		return nil, errNeedUpgrade
+	}
 	if strings.HasPrefix(restPath, issueGetPrefix) {
 		after := restPath[len(issueGetPrefix):]
 		ownerSlash := strings.IndexByte(after, '/')
@@ -498,17 +560,17 @@ func answerRest(f *forge, method, restPath, queryText string, body []byte, heade
 						numberText := tail[len("issues/"):]
 						if number, err := strconv.Atoi(numberText); err == nil && strconv.Itoa(number) == numberText {
 							if hit := issueReplyBuffer(f, repoName, number); hit != nil {
-								return hit
+								return hit, nil
 							}
 						}
 					} else if method == "POST" && tail == "issues" {
-						return createIssueFast(f, repoName, body)
+						return createIssueFast(f, repoName, body), nil
 					}
 				}
 			}
 		}
 	}
-	return routeRest(f, f.viewerLogin, method, restPath, queryText, string(body), true, headers)
+	return routeRest(f, f.viewerLogin, method, restPath, queryText, string(body), true, headers), nil
 }
 
 // routeRest answers the generic REST path (the non-hot routes).
@@ -716,10 +778,10 @@ func receiveAdvertisement(r *repo) []byte {
 }
 
 // answerGit answers one git smart-HTTP request.
-func answerGit(f *forge, request *parsedRequest, body []byte, owner, repoName, rest, queryText, method string) []byte {
+func answerGit(f *forge, request *parsedRequest, body []byte, owner, repoName, rest, queryText, method string) ([]byte, error) {
 	forgeRepo, ok := f.getRepo(owner, repoName)
 	if !ok {
-		return git404
+		return git404, nil
 	}
 	if rest == "info/refs" && method == "GET" {
 		query := parseQuery(queryText)
@@ -727,31 +789,27 @@ func answerGit(f *forge, request *parsedRequest, body []byte, owner, repoName, r
 		if service == "git-upload-pack" {
 			wantsV2 := request.headers["git-protocol"] == "version=2"
 			if wantsV2 {
-				return uploadV2Advert
+				return uploadV2Advert, nil
 			}
 			if cached, ok := forgeRepo.advertCache["upload-v0"]; ok {
-				return cached
+				return cached, nil
 			}
-			built := gitResponse(uploadPackV0Advertisement(forgeRepo, true), "application/x-git-upload-pack-advertisement")
-			forgeRepo.advertCache["upload-v0"] = built
-			return built
+			return nil, errNeedUpgrade
 		}
 		if service == "git-receive-pack" {
 			if cached, ok := forgeRepo.advertCache["receive-v0"]; ok {
-				return cached
+				return cached, nil
 			}
-			built := gitResponse(receiveAdvertisement(forgeRepo), "application/x-git-receive-pack-advertisement")
-			forgeRepo.advertCache["receive-v0"] = built
-			return built
+			return nil, errNeedUpgrade
 		}
-		return git400Dumb
+		return git400Dumb, nil
 	}
 	if rest == "git-upload-pack" && method == "POST" {
 		wantsV2 := request.headers["git-protocol"] == "version=2"
 		if wantsV2 {
 			rawKey := string(body)
 			if cached, ok := forgeRepo.lsRefsCache[rawKey]; ok {
-				return cached
+				return cached, nil
 			}
 		}
 		packets, _ := decodePktLines(body)
@@ -764,11 +822,10 @@ func answerGit(f *forge, request *parsedRequest, body []byte, owner, repoName, r
 		}
 		var reply []byte
 		if wantsV2 && strings.HasPrefix(commandLine, "command=ls-refs") {
-			peel, symrefs, unborn, prefixes := parseLsRefsArgs(packets)
-			rawKey := string(body)
-			built := gitResponse(lsRefsResponse(forgeRepo, peel, symrefs, unborn, prefixes), "application/x-git-upload-pack-result")
-			forgeRepo.lsRefsCache[rawKey] = built
-			return built
+			if cached, ok := forgeRepo.lsRefsCache[string(body)]; ok {
+				return cached, nil
+			}
+			return nil, errNeedUpgrade
 		}
 		if wantsV2 && strings.HasPrefix(commandLine, "command=fetch") {
 			args := parseFetchArgs(packets)
@@ -776,29 +833,24 @@ func answerGit(f *forge, request *parsedRequest, body []byte, owner, repoName, r
 			if args.hasDepth && args.depth == 1 && len(args.wants) == 1 && len(args.haves) == 0 && len(args.shallow) == 0 {
 				rawKey := string(body)
 				if cached, ok := forgeRepo.lsRefsCache[rawKey]; ok {
-					return cached
+					return cached, nil
 				}
-				built := gitResponse(fetchV2Response(forgeRepo, args), "application/x-git-upload-pack-result")
-				forgeRepo.lsRefsCache[rawKey] = built
-				forgeRepo.shallowPackCache[args.wants[0]] = built
-				forgeRepo.shallowPackTip = args.wants[0]
-				forgeRepo.hasShallowTip = true
-				return built
+				return nil, errNeedUpgrade
 			}
 			reply = fetchV2Response(forgeRepo, args)
 		} else if wantsV2 && strings.HasPrefix(commandLine, "command=") {
-			return httpResponse(400, "Bad Request", "content-type: text/plain\r\n", []byte("unknown command "+commandLine+"\n"))
+			return httpResponse(400, "Bad Request", "content-type: text/plain\r\n", []byte("unknown command "+commandLine+"\n")), nil
 		} else {
 			reply = fetchV0Response(forgeRepo, parseFetchV0Request(packets))
 		}
-		return gitResponse(reply, "application/x-git-upload-pack-result")
+		return gitResponse(reply, "application/x-git-upload-pack-result"), nil
 	}
 	if rest == "git-receive-pack" && method == "POST" {
 		outcome := f.receivePackResponse(forgeRepo, body)
 		forgeRepo.clearGitCaches()
-		return gitResponse(outcome, "application/x-git-receive-pack-result")
+		return gitResponse(outcome, "application/x-git-receive-pack-result"), nil
 	}
-	return git404
+	return git404, nil
 }
 
 // ---------------------------------------------------------------- server
