@@ -264,6 +264,10 @@ func handleConn(state *connState, conn net.Conn) {
 	for {
 		n, err := conn.Read(readBuf)
 		if n > 0 {
+			// The request's ACK can ride its reply: re-arm QUICKACK before the
+			// answer (Linux; the option resets after one ACK, so it is re-armed
+			// per read, outside the answer mutex).
+			armQuickAck(conn)
 			if len(state.buffer) == 0 {
 				state.buffer = append(state.buffer[:0], readBuf[:n]...)
 			} else {
