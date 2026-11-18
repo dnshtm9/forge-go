@@ -735,6 +735,9 @@ const (
 	jsonString
 	jsonArray
 	jsonObject
+	// jsonUndefined stands for JS `undefined`: a parse failure's marker, which
+	// asObject turns into a 400 (never a 422).
+	jsonUndefined
 )
 
 type jsonMember struct {

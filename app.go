@@ -373,6 +373,7 @@ func answerGuarded(state *connState, request *parsedRequest, body []byte) (reply
 			} else {
 				err = &panicError{what: r}
 			}
+			os.Stderr.WriteString("[forge] panic stack: " + string(debugStack()))
 		}
 	}()
 	return answer(state, request, body)
@@ -497,12 +498,14 @@ func answerRest(f *forge, method, restPath, queryText string, body []byte, heade
 // routeRest answers the generic REST path (the non-hot routes).
 func routeRest(f *forge, token, method, restPath, queryText, bodyText string, hasToken bool, headers map[string]string) []byte {
 	query := parseQuery(queryText)
+	// parseJsonOr(bodyText, undefined): an empty body is null, malformed input is
+	// the undefined marker (which asObject turns into a 400 body).
 	body := jsonValue{kind: jsonNull}
 	if strings.TrimSpace(bodyText) != "" {
 		if parsed, ok := parseJSON(bodyText); ok {
 			body = parsed
 		} else {
-			body = jsonValue{kind: jsonObject, members: nil}
+			body = jsonValue{kind: jsonUndefined}
 		}
 	}
 	host := headers["host"]
