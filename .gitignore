@@ -1,7 +1,4 @@
-*.exe
 *.exe~
 probe.exe
-forge.exe
-forge.exe~
 .makefun/*
 !.makefun/owner.json
