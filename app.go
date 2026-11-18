@@ -153,7 +153,7 @@ func parseHead(buffer []byte) *parsedRequest {
 		if colon > 0 {
 			colon += position
 			name := strings.ToLower(string(buffer[position:colon]))
-			if strings.Contains(" "+name+" ", neededHeaders) {
+			if strings.Contains(neededHeaders, " "+name+" ") {
 				headers[name] = strings.TrimSpace(string(buffer[colon+1 : lineEnd2]))
 			}
 		}
