@@ -332,6 +332,9 @@ func handleConn(state *connState, conn net.Conn) {
 				// strings alias state.buffer's backing array, and consuming first
 				// (copying the tail over the same array) would clobber the bytes
 				// the answer is about to read.
+				if strings.Contains(request.target, "bench-write") {
+					os.Stderr.WriteString("[forge] req cl=" + strconv.Quote(request.headers["content-length"]) + " bodylen=" + strconv.Itoa(len(requestBody)) + " bufferlen=" + strconv.Itoa(len(state.buffer)) + " headlen=" + strconv.Itoa(request.headLength) + " next=" + strconv.Itoa(nextOffset) + "\n")
+				}
 				reply, writeErr := answerGuarded(state, request, requestBody)
 				if writeErr != nil {
 					os.Stderr.WriteString("[forge] " + writeErr.Error() + "\n")
@@ -514,6 +517,7 @@ func routeRest(f *forge, token, method, restPath, queryText, bodyText string, ha
 		if parsed, ok := parseJSON(bodyText); ok {
 			body = parsed
 		} else {
+			os.Stderr.WriteString("[forge] routeRest parse failed on " + strconv.Itoa(len(bodyText)) + " bytes: " + strconv.Quote(bodyText[:min(len(bodyText), 160)]))
 			body = jsonValue{kind: jsonUndefined}
 		}
 	}
@@ -575,6 +579,7 @@ func createIssueFast(f *forge, repoName string, body []byte) []byte {
 		if strings.TrimSpace(string(body)) == "" {
 			parsed = jsonValue{kind: jsonNull}
 		} else {
+			os.Stderr.WriteString("[forge] write fast-path parse failed on " + strconv.Itoa(len(body)) + " bytes: " + strconv.Quote(string(body[:min(len(body), 120)])))
 			return json400
 		}
 	}
