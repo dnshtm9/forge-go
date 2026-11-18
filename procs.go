@@ -65,8 +65,12 @@ func cgroupProcs() (int, bool) {
 
 // sizeToQuota sizes the Go scheduler to the sandbox's CPU quota. An explicit
 // GOMAXPROCS env var wins over everything; a cgroup quota smaller than the
-// visible core count shrinks the scheduler to it; anything else leaves the
-// runtime's own choice in place. One stderr line records what was chosen.
+// visible core count shrinks the scheduler to it; with no usable quota the
+// fallback is 2 — the competition sandbox's documented CPU count, never
+// NumCPU() (on a 16-core host without a readable cgroup the default would
+// size the scheduler to 16 cores against a 2-CPU quota, the exact failure
+// this exists to fix). Never raised above NumCPU(). One stderr line records
+// what was chosen.
 func sizeToQuota() {
 	if raw := strings.TrimSpace(os.Getenv("GOMAXPROCS")); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n >= 1 {
@@ -80,5 +84,11 @@ func sizeToQuota() {
 		os.Stderr.WriteString("[entry] GOMAXPROCS=" + strconv.Itoa(n) + " (cgroup quota)\n")
 		return
 	}
-	os.Stderr.WriteString("[entry] GOMAXPROCS=" + strconv.Itoa(runtime.GOMAXPROCS(0)) + " (default)\n")
+	const fallbackProcs = 2
+	n := fallbackProcs
+	if numCPU := runtime.NumCPU(); n > numCPU {
+		n = numCPU
+	}
+	runtime.GOMAXPROCS(n)
+	os.Stderr.WriteString("[entry] GOMAXPROCS=" + strconv.Itoa(n) + " (fallback: no cgroup quota)\n")
 }
