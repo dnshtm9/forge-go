@@ -476,7 +476,7 @@ func answerLocked(state *connState, request *parsedRequest, body []byte, readOnl
 		if !ok {
 			return json404, nil
 		}
-		return answerGit(f, request, body, owner, repoName, rest, queryText, method)
+		return answerGit(f, request, body, owner, repoName, rest, queryText, method, readOnly)
 	}
 
 	// REST v3.
@@ -545,6 +545,7 @@ func answerRest(f *forge, method, restPath, queryText string, body []byte, heade
 		}
 		return nil, errNeedUpgrade
 	}
+	// The exclusive path: run the fills (a cold GET's reply is cached here).
 	if strings.HasPrefix(restPath, issueGetPrefix) {
 		after := restPath[len(issueGetPrefix):]
 		ownerSlash := strings.IndexByte(after, '/')
@@ -778,7 +779,7 @@ func receiveAdvertisement(r *repo) []byte {
 }
 
 // answerGit answers one git smart-HTTP request.
-func answerGit(f *forge, request *parsedRequest, body []byte, owner, repoName, rest, queryText, method string) ([]byte, error) {
+func answerGit(f *forge, request *parsedRequest, body []byte, owner, repoName, rest, queryText, method string, readOnly bool) ([]byte, error) {
 	forgeRepo, ok := f.getRepo(owner, repoName)
 	if !ok {
 		return git404, nil
@@ -794,13 +795,23 @@ func answerGit(f *forge, request *parsedRequest, body []byte, owner, repoName, r
 			if cached, ok := forgeRepo.advertCache["upload-v0"]; ok {
 				return cached, nil
 			}
-			return nil, errNeedUpgrade
+			if readOnly {
+				return nil, errNeedUpgrade
+			}
+			built := gitResponse(uploadPackV0Advertisement(forgeRepo, true), "application/x-git-upload-pack-advertisement")
+			forgeRepo.advertCache["upload-v0"] = built
+			return built, nil
 		}
 		if service == "git-receive-pack" {
 			if cached, ok := forgeRepo.advertCache["receive-v0"]; ok {
 				return cached, nil
 			}
-			return nil, errNeedUpgrade
+			if readOnly {
+				return nil, errNeedUpgrade
+			}
+			built := gitResponse(receiveAdvertisement(forgeRepo), "application/x-git-receive-pack-advertisement")
+			forgeRepo.advertCache["receive-v0"] = built
+			return built, nil
 		}
 		return git400Dumb, nil
 	}
@@ -825,7 +836,13 @@ func answerGit(f *forge, request *parsedRequest, body []byte, owner, repoName, r
 			if cached, ok := forgeRepo.lsRefsCache[string(body)]; ok {
 				return cached, nil
 			}
-			return nil, errNeedUpgrade
+			if readOnly {
+				return nil, errNeedUpgrade
+			}
+			peel, symrefs, unborn, prefixes := parseLsRefsArgs(packets)
+			built := gitResponse(lsRefsResponse(forgeRepo, peel, symrefs, unborn, prefixes), "application/x-git-upload-pack-result")
+			forgeRepo.lsRefsCache[string(body)] = built
+			return built, nil
 		}
 		if wantsV2 && strings.HasPrefix(commandLine, "command=fetch") {
 			args := parseFetchArgs(packets)
@@ -835,7 +852,15 @@ func answerGit(f *forge, request *parsedRequest, body []byte, owner, repoName, r
 				if cached, ok := forgeRepo.lsRefsCache[rawKey]; ok {
 					return cached, nil
 				}
-				return nil, errNeedUpgrade
+				if readOnly {
+					return nil, errNeedUpgrade
+				}
+				built := gitResponse(fetchV2Response(forgeRepo, args), "application/x-git-upload-pack-result")
+				forgeRepo.lsRefsCache[rawKey] = built
+				forgeRepo.shallowPackCache[args.wants[0]] = built
+				forgeRepo.shallowPackTip = args.wants[0]
+				forgeRepo.hasShallowTip = true
+				return built, nil
 			}
 			reply = fetchV2Response(forgeRepo, args)
 		} else if wantsV2 && strings.HasPrefix(commandLine, "command=") {
