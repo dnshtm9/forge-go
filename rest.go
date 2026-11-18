@@ -629,7 +629,6 @@ func commitJSONBytes(f *forge, r *repo, sha string) ([]byte, bool) {
 	j.raw(`""`)
 	j.key("comment_count")
 	j.int(0)
-	j.end()
 	j.raw("}")
 	j.key("url")
 	j.raw(`""`)
@@ -646,7 +645,6 @@ func commitJSONBytes(f *forge, r *repo, sha string) ([]byte, bool) {
 		j.raw(`,"url":"","html_url":""}`)
 	}
 	j.raw("]")
-	j.end()
 	j.raw("}")
 	return j.Bytes(), true
 }
@@ -664,7 +662,6 @@ func branchJSONBytes(r *repo, name string) []byte {
 	j.raw(`,"url":""}`)
 	j.key("protected")
 	j.boolean(false)
-	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -1932,7 +1929,6 @@ func handleGitData(f *forge, r *repo, rest []string, req *restRequest) *reply {
 		j.raw(`{"sha":`)
 		j.string(sha)
 		j.raw(`,"type":"commit","url":""}`)
-		j.end()
 		j.raw("}")
 		return jsonReply(201, j.Bytes())
 	}
@@ -1955,7 +1951,6 @@ func handleGitData(f *forge, r *repo, rest []string, req *restRequest) *reply {
 		j.raw(`{"sha":`)
 		j.string(oid)
 		j.raw(`,"type":"commit","url":""}`)
-		j.end()
 		j.raw("}")
 		return jsonReply(200, j.Bytes())
 	}

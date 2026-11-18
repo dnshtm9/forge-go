@@ -659,6 +659,7 @@ func receiveAdvertisement(r *repo) []byte {
 	refs := r.sortedRefs()
 	headTarget, hasHead := r.refs[r.head]
 	var lines []string
+	lines = append(lines, "# service=git-receive-pack\n")
 	if !hasHead && len(refs) == 0 {
 		lines = append(lines, zeroOid+" capabilities^{}\x00"+capabilities+"\n")
 	} else {
