@@ -36,12 +36,31 @@ if (!existsSync(binPath)) {
   }
 }
 
-const child = spawn(binPath, [], { stdio: 'inherit' });
+// A git checkout can lose the exec bit (a 100644 mode in the tree, a clone on
+// a filesystem that drops it): spawn then fails with EACCES and the trial
+// never boots. chmod 0o755 and retry once — the fix-up is idempotent and runs
+// only when a boot would otherwise die.
+let retried = false;
+function launch(path: string): void {
+  const child = spawn(path, [], { stdio: 'inherit' });
+  child.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EACCES' && !retried) {
+      retried = true;
+      const mode = spawnSync('chmod', ['0o755', path], { stdio: 'ignore' });
+      if (mode.error === undefined && mode.status === 0) {
+        launch(path);
+        return;
+      }
+      process.stderr.write(
+        `[entry] chmod ${path} failed: ${mode.error !== undefined ? mode.error.message : `status ${mode.status}`}\n`,
+      );
+    }
+    process.stderr.write(`[entry] ${err.message}\n`);
+    process.exit(1);
+  });
+  child.on('exit', (code, signal) => {
+    process.exit(code ?? (signal === null ? 1 : 0));
+  });
+}
 
-child.on('error', (err) => {
-  process.stderr.write(`[entry] ${err.message}\n`);
-  process.exit(1);
-});
-child.on('exit', (code, signal) => {
-  process.exit(code ?? (signal === null ? 1 : 0));
-});
+launch(binPath);
