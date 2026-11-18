@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"os"
 	"strconv"
@@ -322,17 +323,11 @@ func handleConn(state *connState, conn net.Conn) {
 					nextOffset = request.headLength + bodyLength
 					requestBody = state.buffer[request.headLength:nextOffset]
 				}
-				if nextOffset == len(state.buffer) {
-					state.buffer = state.buffer[:0]
-				} else {
-					tail := append([]byte{}, state.buffer[nextOffset:]...)
-					state.buffer = append(state.buffer[:0], tail...)
-				}
-				connection := strings.ToLower(request.headers["connection"])
-				if connection == "close" || (request.version == "HTTP/1.0" && connection != "keep-alive") {
-					state.closing = true
-				}
-				reply, writeErr := answer(state, request, requestBody)
+				// Answer BEFORE consuming the buffer: requestBody and parseHead's
+				// strings alias state.buffer's backing array, and consuming first
+				// (copying the tail over the same array) would clobber the bytes
+				// the answer is about to read.
+				reply, writeErr := answerGuarded(state, request, requestBody)
 				if writeErr != nil {
 					os.Stderr.WriteString("[forge] " + writeErr.Error() + "\n")
 					reply = json500
@@ -345,6 +340,18 @@ func handleConn(state *connState, conn net.Conn) {
 				if state.closing {
 					return
 				}
+				// Consume the answered request's bytes (the answer above may have
+				// kept aliases into the buffer, hence after the write).
+				if nextOffset == len(state.buffer) {
+					state.buffer = state.buffer[:0]
+				} else {
+					tail := append([]byte{}, state.buffer[nextOffset:]...)
+					state.buffer = append(state.buffer[:0], tail...)
+				}
+				connection := strings.ToLower(request.headers["connection"])
+				if connection == "close" || (request.version == "HTTP/1.0" && connection != "keep-alive") {
+					state.closing = true
+				}
 				if len(state.buffer) == 0 {
 					break ChunkLoop
 				}
@@ -355,6 +362,25 @@ func handleConn(state *connState, conn net.Conn) {
 		}
 	}
 }
+
+// answerGuarded routes one parsed request, turning a handler panic into a 500
+// so one bad request cannot end a keep-alive connection or the trial.
+func answerGuarded(state *connState, request *parsedRequest, body []byte) (reply []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if s, ok := r.(error); ok {
+				err = s
+			} else {
+				err = &panicError{what: r}
+			}
+		}
+	}()
+	return answer(state, request, body)
+}
+
+type panicError struct{ what any }
+
+func (e *panicError) Error() string { return "handler panic" }
 
 // answer routes one parsed request; nil means nothing is written (a 202).
 func answer(state *connState, request *parsedRequest, body []byte) ([]byte, error) {
@@ -769,7 +795,16 @@ func serve(f *forge, token string, ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			return
+			// A transient accept failure (Windows answers an aborted client with
+			// WSAECONNRESET here) must not end the listener; only a closed one does.
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
+			}
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			// A stale-connection reset is worth one retry cycle, not a dead server.
+			continue
 		}
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			tcp.SetNoDelay(true)
