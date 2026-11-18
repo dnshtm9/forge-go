@@ -1,3 +1,3 @@
-module makefun/forge-go
+module probe
 
 go 1.22
