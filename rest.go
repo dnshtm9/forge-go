@@ -14,23 +14,28 @@ import (
 // jsonBuf builds JSON the way the TypeScript forge's JSON.stringify does: object
 // keys in insertion order, strings escaped as JS escapes them.
 type jsonBuf struct {
-	buf      []byte
-	pending  bool // a value is being built (needComma logic)
-	firstKey bool
+	buf     []byte
+	firstKey []bool // one "first key" flag per open object level
 }
 
-func newJSON() *jsonBuf { return &jsonBuf{firstKey: true} }
+func newJSON() *jsonBuf { return &jsonBuf{firstKey: []bool{true}} }
 
 func (j *jsonBuf) Bytes() []byte { return j.buf }
 
 func (j *jsonBuf) raw(s string) { j.buf = append(j.buf, s...) }
 
 func (j *jsonBuf) sep() {
-	if !j.firstKey {
+	if !j.firstKey[len(j.firstKey)-1] {
 		j.raw(",")
 	}
-	j.firstKey = false
+	j.firstKey[len(j.firstKey)-1] = false
 }
+
+// begin opens a nested object (or array context) for sep purposes.
+func (j *jsonBuf) begin() { j.firstKey = append(j.firstKey, true) }
+
+// end closes one nesting level.
+func (j *jsonBuf) end() { j.firstKey = j.firstKey[:len(j.firstKey)-1] }
 
 func (j *jsonBuf) key(name string) {
 	j.sep()
@@ -91,6 +96,7 @@ func (j *jsonBuf) jv(v jsonValue) {
 		j.raw("]")
 	case jsonObject:
 		j.raw("{")
+		j.begin()
 		for i, m := range v.members {
 			if i > 0 {
 				j.raw(",")
@@ -99,6 +105,7 @@ func (j *jsonBuf) jv(v jsonValue) {
 			j.raw(":")
 			j.jv(m.value)
 		}
+		j.end()
 		j.raw("}")
 	}
 }
@@ -161,6 +168,7 @@ func userRefJSON(f *forge, login string) []byte {
 	}
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("login")
 	j.string(login)
 	j.key("id")
@@ -179,6 +187,7 @@ func userRefJSON(f *forge, login string) []byte {
 	j.string("User")
 	j.key("site_admin")
 	j.boolean(false)
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -187,6 +196,7 @@ func userRefJSON(f *forge, login string) []byte {
 func userRefWithDatesJSON(f *forge, login string, iso string) []byte {
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("login")
 	j.string(login)
 	u, _ := f.user(login)
@@ -214,6 +224,7 @@ func userRefWithDatesJSON(f *forge, login string, iso string) []byte {
 	j.string(iso)
 	j.key("updated_at")
 	j.string(iso)
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -223,6 +234,7 @@ func repoJSONBytes(f *forge, r *repo) []byte {
 	iso := f.clock.isoString()
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("id")
 	j.int(r.id)
 	j.key("node_id")
@@ -271,6 +283,7 @@ func repoJSONBytes(f *forge, r *repo) []byte {
 	} else {
 		j.string("public")
 	}
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -278,6 +291,7 @@ func repoJSONBytes(f *forge, r *repo) []byte {
 func labelJSONBytes(l *label) []byte {
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("id")
 	j.int(l.id)
 	j.key("node_id")
@@ -292,6 +306,7 @@ func labelJSONBytes(l *label) []byte {
 	j.boolean(false)
 	j.key("description")
 	j.null()
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -300,6 +315,7 @@ func labelJSONBytes(l *label) []byte {
 func issueJSONBytes(f *forge, r *repo, is *issue) []byte {
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("id")
 	j.int(is.id)
 	j.key("node_id")
@@ -348,6 +364,7 @@ func issueJSONBytes(f *forge, r *repo, is *issue) []byte {
 	if is.isPull {
 		j.key("pull_request")
 		j.raw("{")
+		j.begin()
 		j.key("url")
 		j.string("/api/v3/repos/" + r.owner + "/" + r.name + "/pulls/" + strconv.Itoa(*is.pullNumber))
 		j.key("html_url")
@@ -358,8 +375,10 @@ func issueJSONBytes(f *forge, r *repo, is *issue) []byte {
 		j.raw(`""`)
 		j.key("merged_at")
 		j.null()
+		j.end()
 		j.raw("}")
 	}
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -367,6 +386,7 @@ func issueJSONBytes(f *forge, r *repo, is *issue) []byte {
 func pullJSONBytes(f *forge, r *repo, p *pull) []byte {
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("id")
 	j.int(p.id)
 	j.key("node_id")
@@ -407,6 +427,7 @@ func pullJSONBytes(f *forge, r *repo, p *pull) []byte {
 	j.raw("[]")
 	j.key("head")
 	j.raw("{")
+	j.begin()
 	j.key("label")
 	j.string(r.owner + ":" + p.head)
 	j.key("ref")
@@ -415,16 +436,20 @@ func pullJSONBytes(f *forge, r *repo, p *pull) []byte {
 	j.string(p.headSha)
 	j.key("repo")
 	j.raw("{")
+	j.begin()
 	j.key("name")
 	j.string(r.name)
 	j.key("full_name")
 	j.string(r.owner + "/" + r.name)
 	j.key("private")
 	j.boolean(r.privateFlag)
+	j.end()
 	j.raw("}")
+	j.end()
 	j.raw("}")
 	j.key("base")
 	j.raw("{")
+	j.begin()
 	j.key("label")
 	j.string(r.owner + ":" + p.base)
 	j.key("ref")
@@ -433,13 +458,16 @@ func pullJSONBytes(f *forge, r *repo, p *pull) []byte {
 	j.string(p.baseSha)
 	j.key("repo")
 	j.raw("{")
+	j.begin()
 	j.key("name")
 	j.string(r.name)
 	j.key("full_name")
 	j.string(r.owner + "/" + r.name)
 	j.key("private")
 	j.boolean(r.privateFlag)
+	j.end()
 	j.raw("}")
+	j.end()
 	j.raw("}")
 	j.key("merged")
 	j.boolean(p.merged)
@@ -463,6 +491,7 @@ func pullJSONBytes(f *forge, r *repo, p *pull) []byte {
 	j.boolean(false)
 	j.key("author_association")
 	j.string("OWNER")
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -470,6 +499,7 @@ func pullJSONBytes(f *forge, r *repo, p *pull) []byte {
 func commentJSONBytes(f *forge, r *repo, c *comment) []byte {
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("id")
 	j.int(c.id)
 	j.key("node_id")
@@ -490,6 +520,7 @@ func commentJSONBytes(f *forge, r *repo, c *comment) []byte {
 	j.string("OWNER")
 	j.key("issue_url")
 	j.string("/api/v3/repos/" + r.owner + "/" + r.name + "/issues/" + strconv.Itoa(c.issueNumber))
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -558,29 +589,35 @@ func commitJSONBytes(f *forge, r *repo, sha string) ([]byte, bool) {
 	message := strings.TrimRight(c.message, "\n")
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("sha")
 	j.string(sha)
 	j.key("node_id")
 	j.string(nodeId("Commit", sha))
 	j.key("commit")
 	j.raw("{")
+	j.begin()
 	j.key("author")
 	j.raw("{")
+	j.begin()
 	j.key("name")
 	j.string(authorName(c.author))
 	j.key("email")
 	j.string(authorEmail(c.author))
 	j.key("date")
 	j.string(dateOf(c.author))
+	j.end()
 	j.raw("}")
 	j.key("committer")
 	j.raw("{")
+	j.begin()
 	j.key("name")
 	j.string(authorName(c.committer))
 	j.key("email")
 	j.string(authorEmail(c.committer))
 	j.key("date")
 	j.string(dateOf(c.committer))
+	j.end()
 	j.raw("}")
 	j.key("message")
 	j.string(message)
@@ -592,6 +629,7 @@ func commitJSONBytes(f *forge, r *repo, sha string) ([]byte, bool) {
 	j.raw(`""`)
 	j.key("comment_count")
 	j.int(0)
+	j.end()
 	j.raw("}")
 	j.key("url")
 	j.raw(`""`)
@@ -608,6 +646,7 @@ func commitJSONBytes(f *forge, r *repo, sha string) ([]byte, bool) {
 		j.raw(`,"url":"","html_url":""}`)
 	}
 	j.raw("]")
+	j.end()
 	j.raw("}")
 	return j.Bytes(), true
 }
@@ -616,6 +655,7 @@ func branchJSONBytes(r *repo, name string) []byte {
 	oid := r.refs["refs/heads/"+name]
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("name")
 	j.string(name)
 	j.key("commit")
@@ -624,6 +664,7 @@ func branchJSONBytes(r *repo, name string) []byte {
 	j.raw(`,"url":""}`)
 	j.key("protected")
 	j.boolean(false)
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -650,12 +691,14 @@ func jsonReply(status int, body []byte) *reply {
 func messageErrorBytes(status int, message string) []byte {
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("message")
 	j.string(message)
 	if status == 404 {
 		j.key("documentation_url")
 		j.string("https://docs.github.com/rest")
 	}
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -1244,6 +1287,7 @@ func handleRest(f *forge, req *restRequest) *reply {
 		}
 		j := newJSON()
 		j.raw("{")
+		j.begin()
 		j.key("current_user_url")
 		j.string("/api/v3/user")
 		j.key("authorizations_url")
@@ -1270,6 +1314,7 @@ func handleRest(f *forge, req *restRequest) *reply {
 		j.string("/api/v3/users/{user}")
 		j.key("user_repositories_url")
 		j.string("/api/v3/users/{user}/repos{?type,page,per_page,sort}")
+		j.end()
 		j.raw("}")
 		return jsonReply(200, j.Bytes()).
 			header("x-oauth-scopes", "repo, read:org").
@@ -1547,6 +1592,7 @@ func contentEntryJSON(r *repo, path string, entry treeEntry) []byte {
 	isDir := entry.mode == "40000"
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("type")
 	if isDir {
 		j.string("dir")
@@ -1589,6 +1635,7 @@ func contentEntryJSON(r *repo, path string, entry treeEntry) []byte {
 	}
 	j.key("_links")
 	j.raw("{}")
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -1600,6 +1647,7 @@ func fileContentJSON(path, oid string, data []byte) []byte {
 	}
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("type")
 	j.string("file")
 	j.key("encoding")
@@ -1624,6 +1672,7 @@ func fileContentJSON(path, oid string, data []byte) []byte {
 	j.raw(`""`)
 	j.key("_links")
 	j.raw("{}")
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -1761,8 +1810,10 @@ func handleContents(f *forge, r *repo, rest []string, req *restRequest) *reply {
 		}
 		j := newJSON()
 		j.raw("{")
+		j.begin()
 		j.key("content")
 		j.raw("{")
+		j.begin()
 		j.key("name")
 		j.string(segments[len(segments)-1])
 		j.key("path")
@@ -1785,6 +1836,7 @@ func handleContents(f *forge, r *repo, rest []string, req *restRequest) *reply {
 		j.string("base64")
 		j.key("content")
 		j.string(base64Of(data))
+		j.end()
 		j.raw("}")
 		j.key("commit")
 		if view, ok := commitJSONBytes(f, r, commitSha); ok {
@@ -1792,6 +1844,7 @@ func handleContents(f *forge, r *repo, rest []string, req *restRequest) *reply {
 		} else {
 			j.null()
 		}
+		j.end()
 		j.raw("}")
 		return jsonReply(status, j.Bytes())
 	}
@@ -1826,6 +1879,7 @@ func handleContents(f *forge, r *repo, rest []string, req *restRequest) *reply {
 		r.refs["refs/heads/"+branchName] = commitSha
 		j := newJSON()
 		j.raw("{")
+		j.begin()
 		j.key("content")
 		j.null()
 		j.key("commit")
@@ -1834,6 +1888,7 @@ func handleContents(f *forge, r *repo, rest []string, req *restRequest) *reply {
 		} else {
 			j.null()
 		}
+		j.end()
 		j.raw("}")
 		return jsonReply(200, j.Bytes())
 	}
@@ -1863,6 +1918,7 @@ func handleGitData(f *forge, r *repo, rest []string, req *restRequest) *reply {
 		r.refs[ref] = sha
 		j := newJSON()
 		j.raw("{")
+		j.begin()
 		j.key("ref")
 		j.string(ref)
 		j.key("node_id")
@@ -1873,6 +1929,7 @@ func handleGitData(f *forge, r *repo, rest []string, req *restRequest) *reply {
 		j.raw(`{"sha":`)
 		j.string(sha)
 		j.raw(`,"type":"commit","url":""}`)
+		j.end()
 		j.raw("}")
 		return jsonReply(201, j.Bytes())
 	}
@@ -1884,6 +1941,7 @@ func handleGitData(f *forge, r *repo, rest []string, req *restRequest) *reply {
 		}
 		j := newJSON()
 		j.raw("{")
+		j.begin()
 		j.key("ref")
 		j.string(refName)
 		j.key("node_id")
@@ -1894,6 +1952,7 @@ func handleGitData(f *forge, r *repo, rest []string, req *restRequest) *reply {
 		j.raw(`{"sha":`)
 		j.string(oid)
 		j.raw(`,"type":"commit","url":""}`)
+		j.end()
 		j.raw("}")
 		return jsonReply(200, j.Bytes())
 	}
@@ -2139,6 +2198,7 @@ func patchIssue(f *forge, r *repo, is *issue, req *restRequest) *reply {
 func pullFileViewJSON(file pullFile) []byte {
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("sha")
 	j.string(file.sha)
 	j.key("filename")
@@ -2157,6 +2217,7 @@ func pullFileViewJSON(file pullFile) []byte {
 	j.raw(`""`)
 	j.key("contents_url")
 	j.raw(`""`)
+	j.end()
 	j.raw("}")
 	return j.Bytes()
 }
@@ -2414,12 +2475,14 @@ func mergePullReply(f *forge, r *repo, req *restRequest, number int) *reply {
 	r.clearGitCaches()
 	j := newJSON()
 	j.raw("{")
+	j.begin()
 	j.key("sha")
 	j.string(mergeSha)
 	j.key("merged")
 	j.boolean(true)
 	j.key("message")
 	j.string("Pull Request successfully merged")
+	j.end()
 	j.raw("}")
 	return jsonReply(200, j.Bytes())
 }
