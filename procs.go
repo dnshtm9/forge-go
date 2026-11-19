@@ -2,6 +2,11 @@
 // cgroup quota, not a cpuset): the process still sees every host core, so
 // Go's default GOMAXPROCS = NumCPU() oversizes the scheduler to cores it has
 // no quota for. Size to the quota instead: GOMAXPROCS = ceil(quota/period).
+//
+// The quota is read for the PROCESS'S OWN cgroup (via /proc/self/cgroup), not
+// the hierarchy root: inside a container the root is the container's group,
+// and outside one (a test rig's child group) the root's files say nothing
+// about this process's limits.
 package main
 
 import (
@@ -34,31 +39,86 @@ func quotaProcs(quotaText, periodText string) (int, bool) {
 	return n, true
 }
 
-// cgroupProcs reads the container's CPU quota: cgroup v2's cpu.max first,
-// then v1's cpu.cfs_quota_us / cpu.cfs_period_us pair. Zero usable values
-// leave the scheduler alone.
-func cgroupProcs() (int, bool) {
-	if data, err := os.ReadFile("/sys/fs/cgroup/cpu.max"); err == nil {
-		fields := strings.Fields(string(data))
-		if len(fields) >= 1 {
+// readTrimmed answers a small file's trimmed content, "" on any failure.
+func readTrimmed(path string) string {
+	if data, err := os.ReadFile(path); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	return ""
+}
+
+// v2Quota reads cpu.max for a v2 group path relative to the cgroup2 mount:
+// /sys/fs/cgroup/<path>/cpu.max when cgroup2 is mounted at the root (a
+// container's view), then /sys/fs/cgroup/unified/<path>/cpu.max (a hybrid
+// host's view). A group that exists but says "max" falls through so a v1
+// limit underneath can still answer.
+func v2Quota(rel string) (int, bool) {
+	for _, mount := range []string{"/sys/fs/cgroup", "/sys/fs/cgroup/unified"} {
+		if line := readTrimmed(mount + rel + "/cpu.max"); line != "" {
+			fields := strings.Fields(line)
 			period := ""
 			if len(fields) >= 2 {
 				period = fields[1]
 			}
-			return quotaProcs(fields[0], period)
+			if n, ok := quotaProcs(fields[0], period); ok {
+				return n, true
+			}
 		}
 	}
-	quotaText := ""
-	periodText := ""
-	if data, err := os.ReadFile("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"); err == nil {
-		quotaText = strings.TrimSpace(string(data))
-		if quotaText == "-1" {
-			return 0, false
+	return 0, false
+}
+
+// v1Quota reads cpu.cfs_quota_us / cpu.cfs_period_us for a v1 cpu group path.
+func v1Quota(rel string) (int, bool) {
+	quotaText := readTrimmed("/sys/fs/cgroup/cpu" + rel + "/cpu.cfs_quota_us")
+	if quotaText == "" {
+		return 0, false
+	}
+	if quotaText == "-1" {
+		return 0, false
+	}
+	return quotaProcs(quotaText, readTrimmed("/sys/fs/cgroup/cpu"+rel+"/cpu.cfs_period_us"))
+}
+
+// ownCgroupPaths parses /proc/self/cgroup into the process's v2 group path
+// ("0::/...") and its v1 cpu group path (the line whose controller list
+// contains "cpu").
+func ownCgroupPaths() (v2Rel, v1Rel string) {
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return "", ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) != 3 {
+			continue
 		}
-		if data, err := os.ReadFile("/sys/fs/cgroup/cpu/cpu.cfs_period_us"); err == nil {
-			periodText = strings.TrimSpace(string(data))
+		if parts[1] == "" && parts[0] == "0" {
+			v2Rel = parts[2]
 		}
-		return quotaProcs(quotaText, periodText)
+		for _, controller := range strings.Split(parts[1], ",") {
+			if controller == "cpu" {
+				v1Rel = parts[2]
+			}
+		}
+	}
+	return v2Rel, v1Rel
+}
+
+// cgroupProcs answers the CPU quota's processor count for this process's own
+// cgroup: the v2 hierarchy first, then v1. Zero usable values leave the
+// scheduler alone.
+func cgroupProcs() (int, bool) {
+	v2Rel, v1Rel := ownCgroupPaths()
+	if v2Rel != "" {
+		if n, ok := v2Quota(v2Rel); ok {
+			return n, true
+		}
+	}
+	if v1Rel != "" {
+		if n, ok := v1Quota(v1Rel); ok {
+			return n, true
+		}
 	}
 	return 0, false
 }
